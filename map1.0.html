@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>图片转map.txt 透明像素过滤+图片中心对准出生点</title>
+<style>
+*{box-sizing:border-box}
+body{background:#222;color:#fff;padding:16;font-family:system-ui}
+.box{margin:12px 0}
+canvas{border:1px solid #888;background:transparent;max-width:100%}
+textarea{width:100%;height:320;background:#111;color:#eee;padding:8;border:1px solid #555}
+input[type=number],input[type=text]{padding:5;width:70;margin:4px 8px}
+label{display:inline-block;margin:4px 8px}
+button{padding:7px 16;font-size:14;cursor:pointer;background:#369;color:#fff;border:0;border-radius:4;margin:4px}
+button:hover{background:#48b}
+.group{border:1px solid #444;padding:10;border-radius:6;margin:10px 0}
+small{color:#aaa}
+</style>
+</head>
+<body>
+<h2>图片转map.txt（透明像素自动删除+图片中心对准出生点）</h2>
+
+<div class="group">
+<h4>1. 图片上传</h4>
+<div class="box">
+  <input type="file" id="imgFile" accept="image/*">
+</div>
+<button onclick="loadImage()">加载预览图片（自动居中、画布透明）</button>
+<canvas id="preview"></canvas>
+</div>
+
+<div class="group">
+<h4>2. 转换配置</h4>
+<div>
+<label>采样步长：</label>
+<input id="step" type="number" value="1" min="1" max="50">
+</div>
+<div>
+<label>过滤背景 R：</label><input id="br" value="1" min="0" max="255">
+<label>G：</label><input id="bg" value="2" min="0" max="255">
+<label>B：</label><input id="bb" value="3" min="0" max="255">
+<small>匹配该RGB会过滤，透明像素(A=0)直接丢弃不生成瓦片</small>
+</div>
+<div>
+<label>version：</label><input id="ver" value="1" min="1">
+<label>tileFloor：</label><input id="floor" value="0">
+</div>
+<div>
+<label>出生点X：</label><input id="sx" value="102.0" step="0.1">
+<label>出生点Y：</label><input id="sy" value="102.0" step="0.1">
+<small>图片中心会自动对齐到此坐标</small>
+</div>
+<div>
+<label>摄像机尺寸：</label><input id="cam" value="100.0" step="0.1">
+</div>
+</div>
+
+<div class="box">
+  <button onclick="genMap()">生成地图JSON（透明瓦片自动删除）</button>
+  <button onclick="downloadFile()">下载 map.txt</button>
+</div>
+
+<div class="group">
+<h4>3. 输出文本（单行无换行）</h4>
+<textarea id="out" readonly></textarea>
+</div>
+
+<script>
+let imgCanvas = document.getElementById("preview");
+let ctx = imgCanvas.getContext("2d");
+let imgData = null;
+let finalMapText = "";
+
+// 加载图片并居中绘制，画布透明不填充黑色
+function loadImage(){
+  const file = document.getElementById("imgFile").files[0];
+  if(!file){
+    alert("请先选择图片文件！");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = function(e){
+    const img = new Image();
+    img.onload = function(){
+      imgCanvas.width = img.width;
+      imgCanvas.height = img.height;
+      const offsetX = (imgCanvas.width - img.width) / 2;
+      const offsetY = (imgCanvas.height - img.height) / 2;
+      ctx.drawImage(img, offsetX, offsetY);
+      imgData = ctx.getImageData(0, 0, imgCanvas.width, imgCanvas.height);
+      alert(`图片加载完成！尺寸：${img.width} × ${img.height}`);
+    }
+    img.onerror = function(){
+      alert("图片加载失败，请检查文件格式是否正常！");
+    }
+    img.src = e.target.result;
+  }
+  reader.readAsDataURL(file);
+}
+
+// 生成地图JSON：图片中心对准出生点 + 透明像素直接删除
+function genMap(){
+  if(!imgData){
+    alert("请先上传并加载图片！");
+    return;
+  }
+  const step = Math.max(1, Number(document.getElementById("step").value) || 1);
+  const bgR = Number(document.getElementById("br").value) || 1;
+  const bgG = Number(document.getElementById("bg").value) || 2;
+  const bgB = Number(document.getElementById("bb").value) || 3;
+  const version = Number(document.getElementById("ver").value) || 1;
+  const floor = Number(document.getElementById("floor").value) || 0;
+  const spawnX = parseFloat(document.getElementById("sx").value) || 102.0;
+  const spawnY = parseFloat(document.getElementById("sy").value) || 102.0;
+  const camSize = parseFloat(document.getElementById("cam").value) || 100.0;
+
+  const tiles = [];
+  const w = imgData.width;
+  const h = imgData.height;
+  const centerPixelX = w / 2;
+  const centerPixelY = h / 2;
+
+  for(let yImg = 0; yImg < h; yImg += step){
+    for(let xImg = 0; xImg < w; xImg += step){
+      const pixelIndex = (yImg * w + xImg) * 4;
+      const r = imgData.data[pixelIndex];
+      const g = imgData.data[pixelIndex + 1];
+      const b = imgData.data[pixelIndex + 2];
+      const a = imgData.data[pixelIndex + 3];
+
+      // 完全透明像素直接跳过不生成瓦片
+      if (a === 0) continue;
+      // 自定义背景色过滤
+      if(r === bgR && g === bgG && b === bgB) continue;
+
+      const colorObj = {"r":r,"g":g,"b":b};
+      const colorStr = JSON.stringify(colorObj, {separators: [',', ':']});
+
+      // 坐标对齐：图片中心对准出生点
+      const worldX = spawnX + (xImg - centerPixelX);
+      const worldY = spawnY - (yImg - centerPixelY);
+
+      const tileItem = {
+        "id": 0,
+        "datas": {
+          "x": String(worldX),
+          "y": String(worldY),
+          "color": colorStr
+        }
+      }
+      tiles.push(tileItem);
+    }
+  }
+
+  const mapObj = {
+    "version": version,
+    "tileFloor": floor,
+    "startPosition": {"x": spawnX, "y": spawnY},
+    "cameraSize": camSize,
+    "objectDatas": tiles
+  }
+  finalMapText = JSON.stringify(mapObj);
+  document.getElementById("out").value = finalMapText;
+  alert(`生成成功！瓦片总数：${tiles.length}\n已自动过滤所有完全透明像素，图片中心对齐出生点(${spawnX},${spawnY})`);
+}
+
+// 下载文件
+function downloadFile(){
+  if(!finalMapText){
+    alert("请先生成地图文本再下载！");
+    return;
+  }
+  const blob = new Blob([finalMapText], {type: "text/plain;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const aTag = document.createElement("a");
+  aTag.href = url;
+  aTag.download = "map.txt";
+  document.body.appendChild(aTag);
+  aTag.click();
+  URL.revokeObjectURL(url);
+  aTag.remove();
+}
+</script>
+</body>
+</html>
