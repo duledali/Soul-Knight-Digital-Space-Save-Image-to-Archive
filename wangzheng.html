@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>地图工具三合一：图片转map/Gzip压缩解压/地图预览</title>
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:system-ui}
+body{background:#222;color:#fff;padding:16;max-width:1400px;margin:0 auto}
+h1,h2,h3,h4{margin:10px 0}
+h1{text-align:center;color:#fff;margin-bottom:20px}
+.group{border:1px solid #444;padding:10px;border-radius:6;margin:10px 0}
+.box{margin:12px 0}
+canvas{border:1px solid #888;background:transparent;max-width:100%}
+.textarea-row{display:flex;gap:8px;align-items:flex-start}
+textarea{width:100%;height:320;background:#111;color:#eee;padding:8;border:1px solid #555;font-family:monospace}
+input[type=number],input[type=text]{padding:5;width:70;margin:4px 8px;background:#111;color:#fff;border:1px solid #555}
+label{display:inline-block;margin:4px 8px}
+button{padding:7px 16;font-size:14;cursor:pointer;background:#369;color:#fff;border:0;border-radius:4;margin:4px}
+button:hover{background:#48b}
+small{color:#aaa}
+.tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid #444;padding-bottom:8px}
+.tab-btn{background:#333;border:none;padding:8px 16px;color:#ccc;border-radius:4px 4px 0 0}
+.tab-btn.active{background:#369;color:#fff}
+.tab-panel{display:none}
+.tab-panel.active{display:block}
+/* 压缩工具专用样式适配深色 */
+.wrap{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:10px}
+.card{background:#181818;padding:20px;border-radius:12px;border:1px solid #444}
+.card h2{font-size:18px;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.compress h2{color:#4cd964}
+.decompress h2{color:#0099ff}
+.textarea-wrap{display:flex;gap:8px;margin-bottom:12px}
+.btns{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.btn-clear{background:#dc3545;color:#fff;white-space:nowrap}
+.btn-compress{background:#28a745;color:white}
+.btn-decompress{background:#007bff;color:white}
+.btn-copy{background:#6c757d;color:white}
+.btn-file{background:#9467bd;color:white}
+.btn-down-sk{background:#228b22;color:#fff}
+.tip{font-size:13px;color:#aaa;margin-top:8px}
+.error{color:#ff5555;margin-top:10px;font-size:14px}
+.warn-text{color:#ffd040;margin:8px 0;font-size:14px}
+@media (max-width:768px){
+  .wrap{grid-template-columns:1fr}
+  .textarea-wrap{flex-direction:column}
+  .btn-clear,.btn-copy,.btn-down-sk{align-self:flex-end}
+  .textarea-row{flex-direction:column}
+}
+</style>
+</head>
+<body>
+<h1>地图工具箱三合一</h1>
+<!-- 标签切换栏 顺序：1图片转map、2压缩解压、3地图预览 -->
+<div class="tabs">
+  <button class="tab-btn active" data-tab="tab1">1.图片转map.txt生成器</button>
+  <button class="tab-btn" data-tab="tab2">2.Gzip Base64压缩解压</button>
+  <button class="tab-btn" data-tab="tab3">3.map.txt地图可视化预览</button>
+</div>
+
+<!-- 面板1：图片转map（输出框增加复制按钮） -->
+<div class="tab-panel active" id="tab1">
+  <h2>图片转map.txt（透明像素自动删除+图片中心对准固定出生点(102.0,102.0)，奇数尺寸自动补偶数）</h2>
+  <div class="group">
+    <h4>1. 图片上传</h4>
+    <div class="box">
+      <input type="file" id="imgFile" accept="image/*">
+    </div>
+    <button onclick="loadImage()">加载预览图片（自动居中、画布透明）</button>
+    <canvas id="preview"></canvas>
+  </div>
+  <div class="group">
+    <h4>2. 转换配置</h4>
+    <div>
+      <label>采样步长：</label>
+      <input id="step" type="number" value="1" min="1" max="50">
+    </div>
+    <div>
+      <label>过滤背景 R：</label><input id="br" value="1" min="0" max="255">
+      <label>G：</label><input id="bg" value="2" min="0" max="255">
+      <label>B：</label><input id="bb" value="3" min="0" max="255">
+      <small>匹配该RGB会过滤，透明像素(A=0)直接丢弃不生成瓦片</small>
+    </div>
+    <div>
+      <label>version：</label><input id="ver" value="1" min="1">
+      <label>tileFloor：</label><input id="floor" value="0">
+    </div>
+    <div>
+      <small>出生点固定为 (102.0, 102.0)，不可调整，图片中心自动对齐该坐标；图片宽高奇数自动补空白至偶数</small>
+    </div>
+    <div>
+      <label>摄像机尺寸：</label><input id="cam" value="100.0" step="0.1">
+    </div>
+  </div>
+  <div class="box">
+    <button onclick="genMap()">生成地图JSON（透明瓦片自动删除）</button>
+    <button onclick="downloadFile()">下载 map.txt</button>
+  </div>
+  <div class="group">
+    <h4>3. 输出文本（单行无换行）</h4>
+    <div class="textarea-row">
+      <textarea id="out" readonly></textarea>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        <button class="btn-clear" onclick="clearMapOutput()">清空输出</button>
+        <button class="btn-copy" onclick="copyMapOutput()">复制输出</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 面板2：Gzip压缩解压（压缩结果增加下载skmap.txt按钮） -->
+<div class="tab-panel" id="tab2">
+  <h2>Gzip ↔ Base64 在线压缩解压工具</h2>
+  <div class="wrap">
+    <!-- 压缩模块 -->
+    <div class="card compress">
+      <h2>🔧 压缩（原始内容 → Gzip Base64）</h2>
+      <div class="textarea-wrap">
+        <textarea id="rawInput" placeholder="粘贴原始文本，或上传文件进行压缩..."></textarea>
+        <button class="btn-clear" onclick="clearInput('rawInput')">清空</button>
+      </div>
+      <div class="btns">
+        <button class="btn-file" onclick="document.getElementById('fileCompress').click()">上传文件</button>
+        <input type="file" id="fileCompress" hidden />
+        <button class="btn-compress" onclick="runCompress()">执行压缩</button>
+        <button class="btn-copy" onclick="copyText('compressOutput')">复制结果</button>
+      </div>
+      <div class="textarea-wrap">
+        <textarea id="compressOutput" readonly placeholder="压缩后的Base64字符串会显示在这里"></textarea>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <button class="btn-clear" onclick="clearInput('compressOutput')">清空</button>
+          <button class="btn-down-sk" onclick="downloadSkMap()">下载 skmap.txt</button>
+        </div>
+      </div>
+      <div class="error" id="compressErr"></div>
+      <div class="tip">说明：先输入文本/上传文件，点击【执行压缩】生成gzip+base64字符串，下载命名为map(x).skmap.txt</div>
+    </div>
+    <!-- 解压模块 -->
+    <div class="card decompress">
+      <h2>📂 解压（Gzip Base64 → 原始内容）</h2>
+      <div class="textarea-wrap">
+        <textarea id="b64Input" placeholder="粘贴Gzip压缩后的Base64字符串..."></textarea>
+        <button class="btn-clear" onclick="clearInput('b64Input')">清空</button>
+      </div>
+      <div class="btns">
+        <button class="btn-decompress" onclick="runDecompress()">执行解压</button>
+        <button class="btn-copy" onclick="copyText('decompressOutput')">复制结果</button>
+        <button class="btn-file" onclick="downloadRaw()">下载原始文件</button>
+      </div>
+      <div class="textarea-wrap">
+        <textarea id="decompressOutput" readonly placeholder="解压还原后的原始内容会显示在这里"></textarea>
+        <button class="btn-clear" onclick="clearInput('decompressOutput')">清空</button>
+      </div>
+      <div class="error" id="decompressErr"></div>
+      <div class="tip">说明：粘贴H4sI开头的gzip base64字符串，点击解压还原原始数据</div>
+    </div>
+  </div>
+</div>
+
+<!-- 面板3：地图预览（3号位） -->
+<div class="tab-panel" id="tab3">
+  <h2>地图可视化预览工具</h2>
+  <div class="warn-text">提示：此处粘贴未压缩的原始JSON map.txt文件</div>
+  <textarea id="jsonInput" placeholder="粘贴map.txt全部内容"></textarea>
+  <br>
+  <button onclick="renderMap()">渲染地图</button>
+  <br>
+  <canvas id="canvas"></canvas>
+</div>
+
+<script>
+// ===================== 全局变量 =====================
+let skMapDownloadIndex = 1; // skmap文件自增数字
+// ===================== 标签切换逻辑 =====================
+const tabBtns = document.querySelectorAll('.tab-btn');
+const tabPanels = document.querySelectorAll('.tab-panel');
+tabBtns.forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    const targetTab = btn.dataset.tab;
+    tabBtns.forEach(b=>b.classList.remove('active'));
+    tabPanels.forEach(p=>p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(targetTab).classList.add('active');
+  })
+})
+
+// ===================== 1.图片转map工具逻辑 =====================
+let imgCanvas = document.getElementById("preview");
+let ctx = imgCanvas.getContext("2d");
+let imgData = null;
+let finalMapText = "";
+// 固定出生点，禁止修改
+const SPAWN_X = 102.0;
+const SPAWN_Y = 102.0;
+
+// 清空图片转map输出框
+function clearMapOutput() {
+  document.getElementById("out").value = "";
+  finalMapText = "";
+}
+// 复制图片转map输出
+async function copyMapOutput() {
+  const val = document.getElementById("out").value;
+  if(!val) return alert("暂无输出内容");
+  await navigator.clipboard.writeText(val);
+  alert("复制输出成功");
+}
+
+// 加载图片并居中绘制，画布透明不填充黑色
+function loadImage(){
+  const file = document.getElementById("imgFile").files[0];
+  if(!file){
+    alert("请先选择图片文件！");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = function(e){
+    const img = new Image();
+    img.onload = function(){
+      imgCanvas.width = img.width;
+      imgCanvas.height = img.height;
+      const offsetX = (imgCanvas.width - img.width) / 2;
+      const offsetY = (imgCanvas.height - img.height) / 2;
+      ctx.drawImage(img, offsetX, offsetY);
+      imgData = ctx.getImageData(0, 0, imgCanvas.width, imgCanvas.height);
+      alert(`图片加载完成！尺寸：${img.width} × ${img.height}`);
+    }
+    img.onerror = function(){
+      alert("图片加载失败，请检查文件格式是否正常！");
+    }
+    img.src = e.target.result;
+  }
+  reader.readAsDataURL(file);
+}
+// 生成地图JSON：图片中心对准固定出生点 + 透明像素直接删除 + 奇数宽高自动补偶数
+function genMap(){
+  if(!imgData){
+    alert("请先上传并加载图片！");
+    return;
+  }
+  const step = Math.max(1, Number(document.getElementById("step").value) || 1);
+  const bgR = Number(document.getElementById("br").value) || 1;
+  const bgG = Number(document.getElementById("bg").value) || 2;
+  const bgB = Number(document.getElementById("bb").value) || 3;
+  const version = Number(document.getElementById("ver").value) || 1;
+  const floor = Number(document.getElementById("floor").value) || 0;
+  const camSize = parseFloat(document.getElementById("cam").value) || 100.0;
+  const tiles = [];
+  const w = imgData.width;
+  const h = imgData.height;
+
+  // 奇数宽高补位，得到偶数总尺寸
+  let fullW = w;
+  let fullH = h;
+  if (fullW % 2 !== 0) fullW += 1;
+  if (fullH % 2 !== 0) fullH += 1;
+
+  const centerPixelX = fullW / 2;
+  const centerPixelY = fullH / 2;
+
+  for(let yImg = 0; yImg < fullH; yImg += step){
+    for(let xImg = 0; xImg < fullW; xImg += step){
+      // 超出原图范围视为空白，直接跳过不生成瓦片
+      if (xImg >= w || yImg >= h) continue;
+
+      const pixelIndex = (yImg * w + xImg) * 4;
+      const r = imgData.data[pixelIndex];
+      const g = imgData.data[pixelIndex + 1];
+      const b = imgData.data[pixelIndex + 2];
+      const a = imgData.data[pixelIndex + 3];
+      // 完全透明像素直接跳过不生成瓦片
+      if (a === 0) continue;
+      // 自定义背景色过滤
+      if(r === bgR && g === bgG && b === bgB) continue;
+      const colorObj = {"r":r,"g":g,"b":b};
+      const colorStr = JSON.stringify(colorObj, {separators: [',', ':']});
+      // 坐标对齐：图片中心对准固定出生点
+      const worldX = SPAWN_X + (xImg - centerPixelX);
+      const worldY = SPAWN_Y - (yImg - centerPixelY);
+      const tileItem = {
+        "id": 0,
+        "datas": {
+          "x": String(worldX),
+          "y": String(worldY),
+          "color": colorStr
+        }
+      }
+      tiles.push(tileItem);
+    }
+  }
+  const mapObj = {
+    "version": version,
+    "tileFloor": floor,
+    "startPosition": {"x": SPAWN_X, "y": SPAWN_Y},
+    "cameraSize": camSize,
+    "objectDatas": tiles
+  }
+  finalMapText = JSON.stringify(mapObj);
+  document.getElementById("out").value = finalMapText;
+  let tipStr = `生成成功！瓦片总数：${tiles.length}\n出生点固定(${SPAWN_X},${SPAWN_Y})，图片中心自动对齐该坐标`;
+  if (fullW !== w || fullH !== h) {
+    tipStr += `\n原图${w}×${h}为奇数尺寸，已自动补空白至偶数${fullW}×${fullH}`;
+  }
+  alert(tipStr);
+}
+// 下载原始map.txt
+function downloadFile(){
+  if(!finalMapText){
+    alert("请先生成地图文本再下载！");
+    return;
+  }
+  const blob = new Blob([finalMapText], {type: "text/plain;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const aTag = document.createElement("a");
+  aTag.href = url;
+  aTag.download = "map.txt";
+  document.body.appendChild(aTag);
+  aTag.click();
+  URL.revokeObjectURL(url);
+  aTag.remove();
+}
+
+// ===================== 2.Gzip Base64压缩解压逻辑 =====================
+let rawBinary = null;
+// 清空输入框通用方法
+function clearInput(id) {
+  document.getElementById(id).value = '';
+}
+// 复制文本工具
+async function copyText(elId) {
+  const val = document.getElementById(elId).value;
+  if (!val) return alert('无内容可复制');
+  await navigator.clipboard.writeText(val);
+  alert('复制成功');
+}
+// 下载压缩结果为 map(x).skmap.txt
+function downloadSkMap(){
+  const b64Text = document.getElementById("compressOutput").value.trim();
+  if(!b64Text) return alert("请先执行压缩生成Base64内容");
+  const blob = new Blob([b64Text], {type:"text/plain;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `map(${skMapDownloadIndex}).skmap.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+  a.remove();
+  skMapDownloadIndex += 1;
+}
+// 文本转Uint8Array
+function strToUint8(str) {
+  return new TextEncoder().encode(str);
+}
+// Uint8Array转文本
+function uint8ToStr(buf) {
+  return new TextDecoder().decode(buf);
+}
+// ArrayBuffer转Base64
+function bufToBase64(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+}
+// Base64转Uint8Array
+function base64ToUint8(b64) {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr;
+}
+// 压缩逻辑：原始数据 → gzip → base64
+function runCompress() {
+  const errBox = document.getElementById('compressErr');
+  errBox.textContent = '';
+  try {
+    const rawText = document.getElementById('rawInput').value.trim();
+    if (!rawText) throw new Error('请输入待压缩文本或上传文件');
+    const rawBuf = strToUint8(rawText);
+    const gzipBuf = pako.gzip(rawBuf);
+    const b64 = bufToBase64(gzipBuf);
+    document.getElementById('compressOutput').value = b64;
+  } catch (e) {
+    errBox.textContent = '压缩失败：' + e.message;
+  }
+}
+// 解压逻辑：base64(gzip) → 原始二进制
+function runDecompress() {
+  const errBox = document.getElementById('decompressErr');
+  errBox.textContent = '';
+  rawBinary = null;
+  try {
+    const b64 = document.getElementById('b64Input').value.trim();
+    if (!b64) throw new Error('请粘贴Gzip Base64字符串');
+    const gzipBuf = base64ToUint8(b64);
+    rawBinary = pako.ungzip(gzipBuf);
+    const rawText = uint8ToStr(rawBinary);
+    document.getElementById('decompressOutput').value = rawText;
+  } catch (e) {
+    errBox.textContent = '解压失败：字符串非合法Gzip Base64，' + e.message;
+  }
+}
+// 解压后下载原始文件
+function downloadRaw() {
+  if (!rawBinary) return alert('请先执行解压生成数据');
+  const blob = new Blob([rawBinary]);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'raw_data.txt';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+// 文件上传压缩监听
+document.getElementById('fileCompress').addEventListener('change', async function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    document.getElementById('rawInput').value = ev.target.result;
+  };
+  reader.readAsText(file);
+})
+
+// ===================== 3.地图预览渲染逻辑 =====================
+function renderMap() {
+    const jsonText = document.getElementById("jsonInput").value;
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    try {
+        const mapData = JSON.parse(jsonText);
+        const tiles = mapData.objectDatas;
+        let points = [];
+        let xs = [], ys = [];
+        for (let t of tiles) {
+            const d = t.datas;
+            const x = parseInt(d.x);
+            const y = parseInt(d.y);
+            const rgb = JSON.parse(d.color);
+            points.push({x, y, rgb});
+            xs.push(x);
+            ys.push(y);
+        }
+        const minX = Math.min(...xs);
+        const maxX = Math.max(...xs);
+        const minY = Math.min(...ys);
+        const maxY = Math.max(...ys);
+        const tileSize = 10;
+        canvas.width = (maxX - minX + 1) * tileSize;
+        canvas.height = (maxY - minY) * tileSize;
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // 核心修改：翻转Y坐标
+        for (let p of points) {
+            const px = (p.x - minX) * tileSize;
+            const py = (maxY - p.y) * tileSize;
+            ctx.fillStyle = `rgb(${p.rgb.r},${p.rgb.g},${p.rgb.b})`;
+            ctx.fillRect(px, py, tileSize, tileSize);
+        }
+        console.log(`地图范围 X${minX}~${maxX} Y${minY}~${maxY}`);
+    } catch (e) {
+        alert("JSON格式错误：" + e.message);
+    }
+}
+</script>
+</body>
+</html>
