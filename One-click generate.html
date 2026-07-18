@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>图片一键生成 skmap.txt 工具</title>
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:system-ui}
+body{background:#222;color:#fff;padding:20px;max-width:1200px;margin:0 auto}
+h1{text-align:center;margin-bottom:24px;color:#fff}
+.group{border:1px solid #444;padding:16px;border-radius:8px;margin:16px 0}
+h3{margin:10px 0;color:#ddd}
+canvas{border:1px solid #666;background:transparent;max-width:100%;margin:10px 0}
+textarea{width:100%;height:180;background:#111;color:#eee;padding:8px;border:1px solid #555;font-family:monospace;margin:8px 0}
+input[type=number],input[type=text]{padding:6px;width:80;margin:4px 8px;background:#111;color:#fff;border:1px solid #555;border-radius:3px}
+label{display:inline-block;margin:6px 8px}
+button{padding:8px 18px;font-size:14;cursor:pointer;border:0;border-radius:5px;margin:6px;background:#2779bd;color:#fff}
+button:hover{background:#3993d0}
+.btn-green{background:#28a745}
+.btn-green:hover{background:#34c759}
+.btn-red{background:#dc3545}
+.btn-red:hover{background:#ff4d5c}
+.tip{font-size:13px;color:#aaa;margin:8px 0}
+.error{color:#ff5555;margin:10px 0}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:8px 0}
+@media (max-width:700px){
+  .row{flex-direction:column;align-items:flex-start}
+}
+</style>
+</head>
+<body>
+<h1>图片一键生成 skmap.txt（图片→MapJSON→GzipBase64）</h1>
+
+<div class="group">
+  <h3>1. 上传图片</h3>
+  <input type="file" id="imgFile" accept="image/*">
+  <br>
+  <button onclick="loadImage()">加载并预览图片</button>
+  <canvas id="preview"></canvas>
+</div>
+
+<div class="group">
+  <h3>2. 转换参数配置</h3>
+  <div class="row">
+    <label>采样步长：</label>
+    <input id="step" type="number" value="1" min="1" max="50">
+  </div>
+  <div class="row">
+    <label>过滤背景 RGB：</label>
+    <input id="br" value="1" min="0" max="255">
+    <input id="bg" value="2" min="0" max="255">
+    <input id="bb" value="3" min="0" max="255">
+    <span class="tip">匹配该色值/透明像素会自动剔除瓦片</span>
+  </div>
+  <div class="row">
+    <label>version：</label><input id="ver" value="1" min="1">
+    <label>tileFloor：</label><input id="floor" value="0">
+    <label>摄像机尺寸：</label><input id="cam" value="100.0" step="0.1">
+  </div>
+  <div class="tip">固定出生点 (102.0,102.0)，图片中心自动对齐；奇数宽高自动补偶数尺寸</div>
+</div>
+
+<div class="group">
+  <h3>3. 一键生成并下载 skmap.txt</h3>
+  <button class="btn-green" onclick="runAllPipeline()">开始转换 → 自动压缩 → 下载skmap.txt</button>
+  <button class="btn-red" onclick="clearAll()">清空全部数据</button>
+  <div class="error" id="errBox"></div>
+</div>
+
+<div class="group">
+  <h3>中间输出：原始MapJSON</h3>
+  <textarea id="jsonOut" readonly placeholder="生成后的原始地图JSON会显示在这里"></textarea>
+</div>
+
+<div class="group">
+  <h3>最终输出：Gzip Base64 压缩字符串</h3>
+  <textarea id="b64Out" readonly placeholder="压缩完成的skmap内容"></textarea>
+</div>
+
+<script>
+// 固定出生点
+const SPAWN_X = 102.0;
+const SPAWN_Y = 102.0;
+// 全局缓存
+let imgCanvas = document.getElementById("preview");
+let ctx = imgCanvas.getContext("2d");
+let imgData = null;
+let rawMapJson = "";
+let finalBase64 = "";
+
+// 清空全部
+function clearAll(){
+  imgData = null;
+  rawMapJson = "";
+  finalBase64 = "";
+  document.getElementById("jsonOut").value = "";
+  document.getElementById("b64Out").value = "";
+  document.getElementById("errBox").textContent = "";
+  imgCanvas.width = 0;
+  imgCanvas.height = 0;
+}
+
+// 加载图片
+function loadImage(){
+  const errBox = document.getElementById("errBox");
+  errBox.textContent = "";
+  const file = document.getElementById("imgFile").files[0];
+  if(!file){
+    errBox.textContent = "请先选择图片文件";
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = e=>{
+    const img = new Image();
+    img.onload = ()=>{
+      imgCanvas.width = img.width;
+      imgCanvas.height = img.height;
+      ctx.clearRect(0,0,imgCanvas.width,imgCanvas.height);
+      ctx.drawImage(img,0,0);
+      imgData = ctx.getImageData(0,0,imgCanvas.width,imgCanvas.height);
+      alert(`图片加载完成：${img.width} × ${img.height}`);
+    }
+    img.onerror = ()=> errBox.textContent = "图片解析失败";
+    img.src = e.target.result;
+  }
+  reader.readAsDataURL(file);
+}
+
+// 1. 图片生成Map JSON
+function generateMapJson(){
+  if(!imgData) throw new Error("未加载图片");
+  const step = Math.max(1, Number(document.getElementById("step").value)||1);
+  const bgR = Number(document.getElementById("br").value)||1;
+  const bgG = Number(document.getElementById("bg").value)||2;
+  const bgB = Number(document.getElementById("bb").value)||3;
+  const version = Number(document.getElementById("ver").value)||1;
+  const floor = Number(document.getElementById("floor").value)||0;
+  const camSize = parseFloat(document.getElementById("cam").value)||100.0;
+  const tiles = [];
+  const w = imgData.width;
+  const h = imgData.height;
+
+  let fullW = w;
+  let fullH = h;
+  if(fullW%2!==0) fullW +=1;
+  if(fullH%2!==0) fullH +=1;
+  const centerPx = fullW/2;
+  const centerPy = fullH/2;
+
+  for(let y=0;y<fullH;y+=step){
+    for(let x=0;x<fullW;x+=step){
+      if(x>=w || y>=h) continue;
+      const idx = (y*w + x)*4;
+      const r = imgData.data[idx];
+      const g = imgData.data[idx+1];
+      const b = imgData.data[idx+2];
+      const a = imgData.data[idx+3];
+      if(a===0) continue;
+      if(r===bgR && g===bgG && b===bgB) continue;
+      const color = JSON.stringify({r,g,b},{separators:[',',':']});
+      const worldX = SPAWN_X + (x - centerPx);
+      const worldY = SPAWN_Y - (y - centerPy);
+      tiles.push({
+        "id":0,
+        "datas":{"x":String(worldX),"y":String(worldY),"color":color}
+      })
+    }
+  }
+  const mapObj = {
+    version,
+    tileFloor:floor,
+    startPosition:{x:SPAWN_X,y:SPAWN_Y},
+    cameraSize:camSize,
+    objectDatas:tiles
+  }
+  return JSON.stringify(mapObj);
+}
+
+// 工具函数：编码转换
+function strToUint8(str){return new TextEncoder().encode(str)}
+function bufToBase64(buf){return btoa(String.fromCharCode(...new Uint8Array(buf)))}
+
+// 2. Gzip压缩+Base64编码
+function compressToB64(text){
+  const buf = strToUint8(text);
+  const gzBuf = pako.gzip(buf);
+  return bufToBase64(gzBuf);
+}
+
+// 3. 下载skmap.txt
+function downloadSkmap(b64Str){
+  const blob = new Blob([b64Str],{type:"text/plain;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "map.skmap.txt";
+  document.body.appendChild(a);
+  a.click();
+  URL.revokeObjectURL(url);
+  a.remove();
+}
+
+// 完整流水线：图片→JSON→压缩→下载
+async function runAllPipeline(){
+  const errBox = document.getElementById("errBox");
+  errBox.textContent = "";
+  try{
+    // 步骤1：生成原始地图JSON
+    rawMapJson = generateMapJson();
+    document.getElementById("jsonOut").value = rawMapJson;
+    // 步骤2：gzip+base64压缩
+    finalBase64 = compressToB64(rawMapJson);
+    document.getElementById("b64Out").value = finalBase64;
+    // 步骤3：自动下载文件
+    downloadSkmap(finalBase64);
+    alert("转换完成！已自动下载 map.skmap.txt");
+  }catch(e){
+    errBox.textContent = "转换失败："+e.message;
+  }
+}
+</script>
+</body>
+</html>
